@@ -18,22 +18,59 @@
 # limitations under the License.
 #
 
+require 'english'
+
+PRIVILEGES = [
+  'NO ACCESS',
+  'CALLBACK',
+  'USER',
+  'OPERATOR',
+  'ADMINISTRATOR'
+]
+PRIV_MAP = Hash[PRIVILEGES.map.with_index { |v, i| [v, i] }]
+FIELDS = [:name, :callin, :link, :ipmi, :priv]
+
+if node[:ipmi][:manufacturer_name] == 'Hewlett-Packard'
+  @channel_number = 2
+else
+  @channel_number = 1
+end
+
+def user_table
+  cmd = IO.popen("ipmitool -c user list #{@channel_number}")
+
+  users = {}
+  cmd.readlines.each do |line|
+    tokens = line.chomp.split(',')
+    users[tokens[0].to_i] = Hash[(FIELDS.zip(tokens[1..-1]))]
+  end
+end
+
+def password_match?(id, password)
+  `ipmitool user test #{id} 16 #{password}`
+  $CHILD_STATUS.success?
+end
+
 def whyrun_supported?
   true
 end
 
 action :modify do
+  current_user = user_table[new_resource.userid]
   execute 'ipmitool set user name' do
     command "ipmitool user set name #{new_resource.userid} #{new_resource.username}"
     only_if { new_resource.username }
+    not_if  { current_user && new_resource.username == current_user[:name] }
   end
   execute 'ipmitool set user password' do
     command "ipmitool user set password #{new_resource.userid} #{new_resource.password}"
     only_if { new_resource.password }
+    not_if  { password_match?(new_resource.userid, new_resource.password) }
   end
   execute 'ipmitool user priv' do
-    command "ipmitool user priv #{new_resource.userid} #{new_resource.level} #{new_resource.channel}"
+    command "ipmitool user priv #{new_resource.userid} #{new_resource.level} #{@channel_number}"
     only_if { new_resource.level }
+    not_if  { current_user && new_resource.level == PRIV_MAP[current_user[:priv]] }
   end
 end
 
